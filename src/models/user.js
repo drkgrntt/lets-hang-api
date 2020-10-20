@@ -1,7 +1,7 @@
-import mongoose from 'mongoose'
+import { Schema, model } from 'mongoose'
 import passportLocalMongoose from 'passport-local-mongoose'
 
-const userSchema = new mongoose.Schema({
+const userSchema = new Schema({
 
   username: String,
   password: String,
@@ -11,12 +11,27 @@ const userSchema = new mongoose.Schema({
   firstName: String,
   lastName: String,
 
+  // Group info
   groups: [{
-    type: mongoose.Schema.Types.ObjectId,
+    type: Schema.Types.ObjectId,
     ref: 'group'
   }],
+  memberOf: [{
+    type: Schema.Types.ObjectId,
+    ref: 'group'
+  }],
+
+  // Hangout info
   hangouts: [{
-    type: mongoose.Schema.Types.ObjectId,
+    type: Schema.Types.ObjectId,
+    ref: 'hangout'
+  }],
+  invitedTo: [{
+    type: Schema.Types.ObjectId,
+    ref: 'hangout'
+  }],
+  attending: [{
+    type: Schema.Types.ObjectId,
     ref: 'hangout'
   }],
 
@@ -26,4 +41,4 @@ const userSchema = new mongoose.Schema({
 
 userSchema.plugin(passportLocalMongoose)
 
-export default mongoose.model('user', userSchema)
+export default model('user', userSchema)

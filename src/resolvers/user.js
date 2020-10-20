@@ -1,7 +1,5 @@
 import jwt from 'jsonwebtoken'
-import { AuthenticationError, ForbiddenError } from 'apollo-server'
-import { combineResolvers } from 'graphql-resolvers'
-import { isAuthenticated } from './authorization'
+import { AuthenticationError } from 'apollo-server'
 
 
 const generateToken = user => {
@@ -9,15 +7,16 @@ const generateToken = user => {
   const expirationLength = 1000 * 60 * 60 * 24 * 30
 
   const token = jwt.sign({
-    iat: new Date().getTime(),
-    exp: new Date().getTime() + expirationLength,
+    iat: new Date().getTime() / 1000,
+    exp: new Date().getTime() + expirationLength / 1000,
     uid: user._id
   }, process.env.JWT_SECRET)
 
   return token
 }
 
-const createUser = async (parent, args, { User }) => {
+
+const createUser = async (parent, args, { User, Group }) => {
 
   const { email, firstName, lastName, password } = args
 
@@ -27,8 +26,20 @@ const createUser = async (parent, args, { User }) => {
     firstName,
     lastName,
     groups: [],
-    hangouts: []
+    memberOf: [],
+    hangouts: [],
+    attending: []
   })
+
+  // Default group
+  const group = new Group({
+    title: 'Friends',
+    description: 'Your main list of friends',
+    owner: newUser
+  })
+
+  group.save()
+  newUser.groups.push(group)
 
   try {
     const user = await User.register(newUser, password)
@@ -37,6 +48,7 @@ const createUser = async (parent, args, { User }) => {
     throw new AuthenticationError(exception)
   }
 }
+
 
 const loginUser = async (parent, { email, password }, { User }) => {
 
@@ -59,6 +71,7 @@ const loginUser = async (parent, { email, password }, { User }) => {
   }
 }
 
+
 const fetchUser = async (parent, { id }, { User }) => {
   try {
     return await User.findOne({ _id: id }).lean().populate('hangouts').populate('groups')
@@ -67,13 +80,16 @@ const fetchUser = async (parent, { id }, { User }) => {
   }
 }
 
-const fetchUsers = async (parent, args, { User }) => {
+
+const searchUsers = async (parent, { search }, { User }) => {
   try {
-    return await User.find().lean().populate('hangouts').populate('groups')
+    return await User.find({ email: new RegExp(search, 'i') })
+      .lean().populate('hangouts').populate('groups')
   } catch (exception) {
     throw new AuthenticationError(exception)
   }
 }
+
 
 const fetchCurrentUser = (parent, args, { me }) => {
   try {
@@ -82,6 +98,12 @@ const fetchCurrentUser = (parent, args, { me }) => {
     throw new AuthenticationError(exception)
   }
 }
+
+
+const checkEmail = async (parent, { email }, { User }) => {
+  return !!await User.findOne({ email }).lean()
+}
+
 
 const fetchUserGroups = ({ groups }, args, { Group }) => {
 
@@ -94,6 +116,20 @@ const fetchUserGroups = ({ groups }, args, { Group }) => {
       .lean().populate('members').populate('owner')
   })
 }
+
+
+const fetchMemberOf = ({ memberOf }, args, { Group }) => {
+
+  if (memberOf.length > 0 && memberOf[0].title) {
+    return memberOf
+  }
+
+  return memberOf.map(async _id => {
+    return await Group.findOne({ _id })
+      .lean().populate('members').populate('owner')
+  })
+}
+
 
 const fetchUserHangouts = ({ hangouts }, args, { Hangout }) => {
 
@@ -109,11 +145,40 @@ const fetchUserHangouts = ({ hangouts }, args, { Hangout }) => {
 }
 
 
+const fetchInvitedTo = ({ invitedTo }, args, { Hangout }) => {
+
+  if (invitedTo.length > 0 && invitedTo[0].title) {
+    return invitedTo
+  }
+
+  return invitedTo.map(async _id => {
+    return await Hangout.findOne({ _id })
+      .lean().populate('organizer')
+      .populate('invited').populate('attendees')
+  })
+}
+
+
+const fetchAttending = ({ attending }, args, { Hangout }) => {
+
+  if (attending.length > 0 && attending[0].title) {
+    return attending
+  }
+
+  return attending.map(async _id => {
+    return await Hangout.findOne({ _id })
+      .lean().populate('organizer')
+      .populate('invited').populate('attendees')
+  })
+}
+
+
 export default {
   Query: {
     user: fetchUser,
-    users: fetchUsers,
-    currentUser: combineResolvers(isAuthenticated, fetchCurrentUser)
+    users: searchUsers,
+    currentUser: fetchCurrentUser,
+    checkEmail
   },
 
   Mutation: {
@@ -123,6 +188,9 @@ export default {
 
   User: {
     groups: fetchUserGroups,
-    hangouts: fetchUserHangouts
+    memberOf: fetchMemberOf,
+    hangouts: fetchUserHangouts,
+    invitedTo: fetchInvitedTo,
+    attending: fetchAttending
   }
 }

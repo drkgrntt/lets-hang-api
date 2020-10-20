@@ -2,12 +2,19 @@ import { gql } from 'apollo-server-express'
 
 export default gql`
   extend type Query {
+
     currentUser: User
+
     user(id: ID!): User
-    users: [User!]
+
+    users(search: String!): [User!]
+
+    checkEmail(email: EmailAddress!): Boolean!
+
   }
 
   extend type Mutation {
+
     createUser(
       firstName: String!,
       lastName: String!,
@@ -19,6 +26,7 @@ export default gql`
       email: EmailAddress!,
       password: String!
     ): Token!
+
   }
 
   type User {
@@ -27,7 +35,10 @@ export default gql`
     firstName: String!
     lastName: String!
     groups: [Group!]
+    memberOf: [Group!]
     hangouts: [Hangout!]
+    invitedTo: [Hangout!]
+    attending: [Hangout!]
   }
 
   type Token {

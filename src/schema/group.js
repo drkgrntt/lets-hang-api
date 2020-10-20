@@ -2,17 +2,42 @@ import { gql } from 'apollo-server-express'
 
 export default gql`
   extend type Query {
-    group(id: String!): Group!
+
+    group(
+      groupId: String!
+    ): Group!
+
     groups: [Group!]
+
   }
 
   extend type Mutation {
+
     createGroup(
       title: String!,
       description: String!
     ): Group!
-    deleteGroup(id: ID!): Group!
-    addMember(groupId: ID!, userId: ID!): Group!
+
+    updateGroup(
+      groupId: ID!,
+      title: String!,
+      description: String!
+    ): Group!
+
+    deleteGroup(
+      groupId: ID!
+    ): Group!
+
+    addToGroup(
+      groupId: ID!,
+      userId: ID!
+    ): Group!
+
+    removeFromGroup(
+      groupId: ID!,
+      userId: ID!
+    ): Group!
+
   }
 
   type Group {

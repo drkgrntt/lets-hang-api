@@ -1,17 +1,32 @@
 import { ForbiddenError } from 'apollo-server'
 import { combineResolvers } from 'graphql-resolvers'
-import { isAuthenticated } from './authorization'
+import { isAuthenticated, ownsGroup } from './authorization'
 
 
-const fetchGroup = async (parent, { id }, { Group }) => {
-  return await Group.findOne({ _id: id }).lean().populate('members').populate('owner')
+// =================================== //
+//           Query Functions           //
+// =================================== //
+
+const fetchGroup = async (parent, { groupId }, { Group }) => {
+  return await Group.findOne({ _id: groupId }).lean().populate('members').populate('owner')
 }
 
-const fetchGroups = async (parent, args, { Group }) => {
-  return await Group.find().lean().populate('members').populate('owner')
+
+const fetchGroups = async (parent, args, { Group, me }) => {
+  return await Group.find({ owner: me }).lean().populate('members').populate('owner')
 }
+
+
+// ================================== //
+//         Mutation Functions         //
+// ================================== //
 
 const createGroup = async (parent, { title, description }, { Group, me }) => {
+
+  const titleExists = await !!Group.findOne({ title }).lean()
+  if (titleExists) {
+    throw new ForbiddenError('You already have a group with this title.')
+  }
 
   const group = new Group({
     title,
@@ -25,19 +40,41 @@ const createGroup = async (parent, { title, description }, { Group, me }) => {
   return await group.save()
 }
 
-const deleteGroup = async (parent, { id }, { Group, me }) => {
 
-  const group = await Group.findOne({ _id: id }).lean()
+const updateGroup = async (parent, { groupId, title, description }, { Group }) => {
 
-  switch (true) {
-    case !group:
-      throw new ForbiddenError('This group does not exist.')
-    case !group.owner._id.equals(me._id):
-      throw new ForbiddenError('You can only delete your own group.')
-    default:
-      return await Group.findOneAndRemove({ _id: id })
+  const group = await Group.findOne({ _id: groupId })
+
+  if (!group) {
+    throw new ForbiddenError('This group does not exist.')
   }
+
+  const existingGroup = await Group.findOne({ title }).lean()
+  if (existingGroup && !existingGroup._id.equals(group._id)) {
+    throw new ForbiddenError('You already have a group with this title.')
+  }
+
+  group.title = title
+  group.description = description
+
+  return await group.save()
 }
+
+
+const deleteGroup = async (parent, { groupId }, { Group, me }) => {
+
+  const group = await Group.findOne({ _id: groupId }).lean()
+
+  if (!group) {
+    throw new ForbiddenError('This group does not exist.')
+  }
+
+  me.groups = me.groups.filter(myGroup => !myGroup._id.equals(group._id))
+  await me.save()
+
+  return await Group.findOneAndRemove({ _id: groupId })
+}
+
 
 const addMember = async (parent, { userId, groupId }, { Group, User, me }) => {
 
@@ -45,9 +82,6 @@ const addMember = async (parent, { userId, groupId }, { Group, User, me }) => {
   const user = await User.findOne({ _id: userId })
 
   switch (true) {
-    case !group.owner._id.equals(me._id):
-      throw new ForbiddenError('You can only add members to groups you own.')
-
     case user._id.equals(me._id):
       throw new ForbiddenError('You already own this group.')
 
@@ -55,12 +89,43 @@ const addMember = async (parent, { userId, groupId }, { Group, User, me }) => {
       throw new ForbiddenError('The user is already a member of the group.')
 
     default:
+      user.memberOf.push(group)
+      await user.save()
+
       group.members.push(user)
       return await group.save()
   }
 }
 
+
+const removeMember = async (parent, { userId, groupId }, { Group, User, me }) => {
+
+  const group = await Group.findOne({ _id: groupId })
+  const user = await User.findOne({ _id: userId })
+
+  switch (true) {
+    case user._id.equals(me._id):
+      throw new ForbiddenError('You already own this group.')
+
+    case group.members.filter(member => member._id.equals(user._id)).length === 0:
+      throw new ForbiddenError('The user is already not a member of the group.')
+
+    default:
+      user.memberOf = user.memberOf.filter(userGroup => !userGroup.equals(group._id))
+      await user.save()
+
+      group.members = group.members.filter(member => !member.equals(user._id))
+      return await group.save()
+  }
+}
+
+
+// =================================== //
+//           Group Functions           //
+// =================================== //
+
 const fetchGroupMembers = ({ members }, args, { User }) => {
+
   if (members.length > 0 && members[0].email) {
     return members
   }
@@ -71,7 +136,9 @@ const fetchGroupMembers = ({ members }, args, { User }) => {
   })
 }
 
+
 const fetchOwner = async ({ owner }, args, { User }) => {
+
   if (owner.email) {
     return owner
   }
@@ -80,16 +147,24 @@ const fetchOwner = async ({ owner }, args, { User }) => {
     .lean().populate('hangouts').populate('groups')
 }
 
+
+// =================================== //
+//           Resolver Object           //
+// =================================== //
+
 export default {
   Query: {
-    group: combineResolvers(isAuthenticated, fetchGroup),
+    group: combineResolvers(ownsGroup, fetchGroup),
     groups: combineResolvers(isAuthenticated, fetchGroups)
   },
 
   Mutation: {
     createGroup: combineResolvers(isAuthenticated, createGroup),
-    deleteGroup: combineResolvers(isAuthenticated, deleteGroup),
-    addMember: combineResolvers(isAuthenticated, addMember)
+    updateGroup: combineResolvers(ownsGroup, updateGroup),
+    deleteGroup: combineResolvers(ownsGroup, deleteGroup),
+
+    addToGroup: combineResolvers(ownsGroup, addMember),
+    removeFromGroup: combineResolvers(ownsGroup, removeMember)
   },
 
   Group: {

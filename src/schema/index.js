@@ -48,6 +48,11 @@ const linkSchema = gql`
   scalar USCurrency
   scalar JSON
   scalar JSONObject
+  scalar UtcOffset
+  scalar Hexadecimal
+  scalar IBAN
+  scalar ObjectID
+  scalar Void
 `
 
 export default [linkSchema, userSchema, groupSchema, hangoutSchema]

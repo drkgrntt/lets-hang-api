@@ -1,22 +1,33 @@
 import { ForbiddenError } from 'apollo-server'
 import { combineResolvers } from 'graphql-resolvers'
-import { isAuthenticated } from './authorization'
+import { isAuthenticated, organizedHangout } from './authorization'
 
-const fetchHangout = async (parent, args, { Hangout }) => {
-  return await Hangout.findOne({ _id: args.id })
+
+// =================================== //
+//           Query Functions           //
+// =================================== //
+
+const fetchHangout = async (parent, { hangoutId }, { Hangout }) => {
+  return await Hangout.findOne({ _id: hangoutId })
     .lean()
     .populate('organizer')
     .populate('attendees')
     .populate('invited')
 }
 
-const fetchHangouts = async (parent, args, { Hangout }) => {
-  return await Hangout.find()
+
+const fetchHangouts = async (parent, args, { Hangout, me }) => {
+  return await Hangout.find({ organizer: me })
     .lean()
     .populate('organizer')
     .populate('attendees')
     .populate('invited')
 }
+
+
+// ================================== //
+//         Mutation Functions         //
+// ================================== //
 
 const createHangout = async (parent, args, { Hangout, me }) => {
 
@@ -39,34 +50,73 @@ const createHangout = async (parent, args, { Hangout, me }) => {
     attendees: []
   })
 
-  await hangout.save()
-
   me.hangouts.push(hangout)
   await me.save()
 
-  return await Hangout.findOne({ _id: hangout._id })
-    .lean()
-    .populate('organizer')
-    .populate('attendees')
-    .populate('invited')
+  return await hangout.save()
 }
 
-const deleteHangout = async (parent, { id }, { Hangout, me }) => {
 
-  const hangout = await Hangout.findOne({ _id: id })
-    .lean()
-    .populate('organizer')
+const updateHangout = async (parent, args, { Hangout, me }) => {
 
-  if (!me._id.equals(hangout.organizer._id)) {
-    throw new ForbiddenError('Only the organizer can delete a hangout.')
+  const {
+    hangoutId,
+    title,
+    description,
+    datetime,
+    location,
+    attendeeLimit
+  } = args
+
+  const hangout = await Hangout.findOne({ _id: hangoutId })
+
+  if (!hangout) {
+    throw new ForbiddenError('This hangout does not exist.')
   }
 
-  return Hangout.findOneAndRemove({ _id: id })
+  const existingHangout = await Hangout.findOne({ title }).lean()
+  if (existingHangout && !existingHangout._id.equals(hangout._id)) {
+    throw new ForbiddenError('You already have a hangout with this title.')
+  }
+
+  hangout.title = title
+  hangout.description = description
+  hangout.datetime = datetime
+  hangout.location = location
+  hangout.attendeeLimit = attendeeLimit
+
+  return await hangout.save()
 }
 
-const joinHangout = async (parent, { id }, { me, Hangout }) => {
 
-  const hangout = await Hangout.findOne({ _id: id })
+const deleteHangout = async (parent, { hangoutId }, { Hangout, me }) => {
+
+  const hangout = await Hangout.findOne({ _id: hangoutId }).populate('attendees').populate('invited')
+
+  if (!hangout) {
+    throw new ForbiddenError('This hangout does not exist.')
+  }
+
+  me.hangouts = me.hangouts.filter(myHangout => !myHangout._id.equals(hangout._id))
+  me.save()
+
+  for (const user of hangout.invited) {
+    user.invitedTo = user.invitedTo.filter(userHangout => !userHangout.equals(hangout._id))
+    user.save()
+  }
+
+  for (const user of hangout.attendees) {
+    user.attending = user.attending.filter(userHangout => !userHangout.equals(hangout._id))
+    user.save()
+  }
+
+  return Hangout.findOneAndRemove({ _id: hangoutId })
+}
+
+
+const joinHangout = async (parent, { hangoutId }, { me, Hangout }) => {
+
+  const hangout = await Hangout.findOne({ _id: hangoutId })
 
   switch (true) {
     case hangout.organizer._id.equals(me._id):
@@ -79,12 +129,35 @@ const joinHangout = async (parent, { id }, { me, Hangout }) => {
       throw new ForbiddenError('You are already attending this hangout.')
 
     default:
-      me.hangouts.push(hangout)
+      me.attending.push(hangout)
       await me.save()
+
       hangout.attendees.push(me)
       return await hangout.save()
   }
 }
+
+
+const leaveHangout = async (parent, { hangoutId }, { me, Hangout }) => {
+
+  const hangout = await Hangout.findOne({ _id: hangoutId })
+
+  switch (true) {
+    case hangout.organizer._id.equals(me._id):
+      throw new ForbiddenError('You are the organizer and cannot leave the hangout.')
+
+    case !hangout.attendees.includes(me._id):
+      throw new ForbiddenError('You are already not attending this hangout.')
+
+    default:
+      me.attending = me.attending.filter(myHangout => !myHangout.equals(hangout._id))
+      await me.save()
+
+      hangout.attendees = hangout.attendees.filter(attendee => !attendee.equals(me._id))
+      return await hangout.save()
+  }
+}
+
 
 const inviteUser = async (parent, { userId, hangoutId }, { Hangout, User, me }) => {
 
@@ -92,20 +165,49 @@ const inviteUser = async (parent, { userId, hangoutId }, { Hangout, User, me }) 
   const user = await User.findOne({ _id: userId })
 
   switch (true) {
-    case !hangout.organizer._id.equals(me._id):
-      throw new ForbiddenError('You can only invite people to hangouts you have organized.')
-
     case user._id.equals(me._id):
       throw new ForbiddenError('You already own this hangout.')
 
-    case hangout.invited.filter(invitedUser => invitedUser._id.equals(user._id)).length > 0:
+    case hangout.invited.filter(invitedUser => invitedUser.equals(user._id)).length > 0:
       throw new ForbiddenError('The user is already invited to the hangout.')
 
     default:
+      user.invitedTo.push(hangout)
+      await user.save()
+
       hangout.invited.push(user)
       return await hangout.save()
   }
 }
+
+
+const uninviteUser = async (parent, { userId, hangoutId }, { Hangout, User, me }) => {
+
+  const hangout = await Hangout.findOne({ _id: hangoutId })
+  const user = await User.findOne({ _id: userId })
+
+  switch (true) {
+    case user._id.equals(me._id):
+      throw new ForbiddenError('You already own this hangout.')
+
+    case hangout.invited.filter(invitedUser => invitedUser._id.equals(user._id)).length === 0:
+      throw new ForbiddenError('The user is already not invited to the hangout.')
+
+    default:
+      if (user.attending.filter(userHangout => userHangout.equals(hangout._id)) > 0) {
+        user.attending = user.attending.filter(userHangout => !userHangout.equals(hangout._id))
+        await user.save()
+      }
+
+      hangout.invited = hangout.invited.filter(invited => !invited.equals(user._id))
+      return await hangout.save()
+  }
+}
+
+
+// =================================== //
+//          Hangout Functions          //
+// =================================== //
 
 const fetchOrganizer = async ({ organizer }, args, { User }) => {
 
@@ -116,6 +218,7 @@ const fetchOrganizer = async ({ organizer }, args, { User }) => {
   return await User.findOne({ _id: organizer })
     .lean().populate('groups').populate('hangouts')
 }
+
 
 const fetchInvited = ({ invited }, args, { User }) => {
 
@@ -129,6 +232,7 @@ const fetchInvited = ({ invited }, args, { User }) => {
   })
 }
 
+
 const fetchAttendees = ({ attendees }, args, { User }) => {
 
   if (attendees.length > 0 && attendees[0].email) {
@@ -141,17 +245,27 @@ const fetchAttendees = ({ attendees }, args, { User }) => {
   })
 }
 
+
+// =================================== //
+//           Resolver Object           //
+// =================================== //
+
 export default {
   Query: {
-    hangout: combineResolvers(isAuthenticated, fetchHangout),
+    hangout: combineResolvers(organizedHangout, fetchHangout),
     hangouts: combineResolvers(isAuthenticated, fetchHangouts)
   },
 
   Mutation: {
     createHangout: combineResolvers(isAuthenticated, createHangout),
-    deleteHangout: combineResolvers(isAuthenticated, deleteHangout),
+    updateHangout: combineResolvers(organizedHangout, updateHangout),
+    deleteHangout: combineResolvers(organizedHangout, deleteHangout),
+
     joinHangout: combineResolvers(isAuthenticated, joinHangout),
-    inviteUser: combineResolvers(isAuthenticated, inviteUser)
+    leaveHangout: combineResolvers(isAuthenticated, leaveHangout),
+
+    inviteUser: combineResolvers(organizedHangout, inviteUser),
+    uninviteUser: combineResolvers(organizedHangout, uninviteUser)
   },
 
   Hangout: {
